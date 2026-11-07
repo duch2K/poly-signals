@@ -28,8 +28,14 @@ class Executor:
         self.store, self.journal, self.kill = store, journal, kill
         self.risk = RiskChecker(s, store)
         self._sleep = sleep or asyncio.sleep
-        self._entry_lock = asyncio.Lock()   # risk check + first leg are atomic
+        self._lock: asyncio.Lock | None = None   # risk check + first leg are atomic
         self._withdraw_alerted = False
+
+    def _entry_lock(self) -> asyncio.Lock:
+        # created lazily inside the running loop (Python 3.9 binds locks at creation)
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     # ------------------------------------------------------------ entry
     def accept(self, raw: dict) -> tuple[Signal | None, dict]:
@@ -70,7 +76,7 @@ class Executor:
         sid = str(sig.signal_id)
         leg1_id: int | None = None
         try:
-            async with self._entry_lock:
+            async with self._entry_lock():
                 if self.kill.active:
                     return self._reject(sid, f"kill_switch_active:{self.kill.reason}")
                 tok_up, tok_down = await self.resolver.resolve(sig.market)
@@ -108,8 +114,9 @@ class Executor:
             # ---- second leg: limit price keeps the pair profitable
             tick2 = await self.venue.get_tick_size(t2)
             per_share_fee1 = fee_amount(f1.avg_price, f1.avg_price, fee1)
-            max_p2 = 1.0 - f1.avg_price - per_share_fee1 - self.s.min_edge - fee2 / 10_000
-            lim2 = round_to_tick(min(p2_sig + self.s.max_slippage, max_p2), tick2, up=False)
+            max_p2 = 1.0 - f1.avg_price - per_share_fee1 - self.s.min_edge - 0.25 * fee2 / 10_000  # p*(1-p) <= 0.25
+            # price must stay below 1.0 (max = 1 - tick), API rejects >= 1
+            lim2 = round_to_tick(min(p2_sig + self.s.max_slippage, max_p2, 1.0 - tick2), tick2, up=False)
             if lim2 <= 0:
                 self.journal.write("leg2_skipped", sid, reason=f"no_edge_after_leg1:max_p2={max_p2:.4f}")
                 return await self._unwind(sid, leg1_id, t1, f1, fee1, "no_edge_after_leg1")
@@ -152,8 +159,8 @@ class Executor:
         )
         return Snapshot(
             book_up=bu, book_down=bd, balance=bal, fee_bps_up=fu, fee_bps_down=fd,
-            limit_up=min(0.999, round_to_tick(sig.price_up + self.s.max_slippage, tu, up=False)),
-            limit_down=min(0.999, round_to_tick(sig.price_down + self.s.max_slippage, td, up=False)),
+            limit_up=round_to_tick(min(sig.price_up + self.s.max_slippage, 1.0 - tu), tu, up=False),
+            limit_down=round_to_tick(min(sig.price_down + self.s.max_slippage, 1.0 - td), td, up=False),
         )
 
     async def _wait_lag(self, seconds: float) -> None:

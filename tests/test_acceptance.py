@@ -105,7 +105,7 @@ def test_slippage(env):
 
 def test_no_edge_with_fees(env):
     m = env()
-    m.data.fee_bps = 300  # 3% eats the 3-cent edge
+    m.data.fee_bps = 1500  # fee per share ~0.075 > 0.03 edge
     r = run(m.executor.handle(make_signal()))
     assert r["reason"].startswith("no_edge")
 
@@ -234,3 +234,54 @@ def test_every_record_has_reason_and_rejects_explain(env):
     recs = m.journal.read_all()
     assert all({"ts", "signal_id", "action", "reason", "mode"} <= r.keys() for r in recs)
     assert all(r["reason"] for r in recs if r["action"] == "rejected")
+
+
+def test_concurrent_signals_share_lock(env):
+    """Module built outside the event loop (like `serve`), then two signals at once.
+    Guards against 'Future attached to a different loop' on Python 3.9."""
+    m = env(max_size_per_market=100)
+
+    async def both():
+        return await asyncio.gather(m.executor.handle(make_signal()), m.executor.handle(make_signal()))
+
+    res = asyncio.run(both())
+    assert [r["status"] for r in res] == ["completed", "completed"]
+    assert not m.kill.active
+
+
+def test_fee_formula_matches_polymarket_docs():
+    from execution.venue import fee_amount
+    # docs example: 100 shares, crypto rate 0.07 (700 bps), p=0.50 -> $1.75
+    assert abs(fee_amount(100 * 0.5, 0.5, 700) - 1.75) < 1e-9
+    # politics 0.04 (400 bps), p=0.10 -> $0.36
+    assert abs(fee_amount(100 * 0.1, 0.1, 400) - 0.36) < 1e-9
+
+
+def test_paper_negative_min_edge_buys_losing_pair(env):
+    """Paper test setting: accept up to 5 cents loss per share so the buy path runs on normal books."""
+    m = env(min_edge=-0.05)
+    m.data.books[UP] = Book(bids=[(0.50, 100)], asks=[(0.52, 100)])   # 0.52 + 0.49 = 1.01
+    r = run(m.executor.handle(make_signal(price_up=0.52)))
+    assert r["status"] == "completed" and r["locked_pnl"] < 0
+    assert m.venue.positions == {UP: 10, DOWN: 10}
+
+
+def test_negative_min_edge_refused_in_live():
+    try:
+        app_mod.build_venue(Settings(_env_file=None, mode=Mode.LIVE, live_confirm="I_UNDERSTAND_REAL_MONEY",
+                                     min_edge=-0.01))
+    except RuntimeError as e:
+        assert "paper-only" in str(e)
+    else:
+        raise AssertionError("negative min_edge accepted in live")
+
+
+def test_order_prices_never_reach_one(env):
+    """Signal near 1.0 + slippage must not produce a limit >= 1 (API rejects it)."""
+    m = env(min_edge=-0.1)
+    m.data.books[UP] = Book(bids=[(0.01, 100)], asks=[(0.02, 100)])
+    m.data.books[DOWN] = Book(bids=[(0.97, 100)], asks=[(0.98, 100)])
+    r = run(m.executor.handle(make_signal(price_up=0.02, price_down=0.98)))
+    assert r["status"] == "completed"
+    sent = [x["price"] for x in m.journal.read_all() if x["action"] in ("leg1_sent", "leg2_sent")]
+    assert sent and all(p < 1.0 for p in sent)

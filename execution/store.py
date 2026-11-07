@@ -66,6 +66,11 @@ class Store:
         with self._lock:
             self._db.execute("UPDATE signals SET status=? WHERE signal_id=?", (status, signal_id))
 
+    def get_signal_status(self, signal_id: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT status FROM signals WHERE signal_id=?", (signal_id,)).fetchone()
+            return row[0] if row else None
+
     # --- legs ---
     def add_leg(self, signal_id: str, market: str, token_id: str, size: float, price: float) -> int:
         with self._lock:

@@ -78,7 +78,7 @@ class RiskChecker:
             return RiskResult(False, f"slippage:ask_up={bu},ask_down={bd}", withdraw_alert=withdraw)
         edge = worst_case_edge(sig, snap)
         if edge < s.min_edge:
-            return RiskResult(False, f"no_edge:{edge:.4f}<{s.min_edge}", withdraw_alert=withdraw)
+            return RiskResult(False, f"no_edge:{edge:.4f}<{s.min_edge},fee_bps={snap.fee_bps_up}/{snap.fee_bps_down}", withdraw_alert=withdraw)
 
         # 6. account balance
         if cost > snap.balance:

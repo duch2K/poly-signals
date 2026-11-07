@@ -63,9 +63,10 @@ def create_http_app(m: Module):
 
     @asynccontextmanager
     async def lifespan(_app):
-        hb = asyncio.create_task(m.heartbeat.run())
+        bg = [asyncio.create_task(m.heartbeat.run())]
         yield
-        hb.cancel()
+        for t in bg:
+            t.cancel()
 
     app = FastAPI(title="polymarket-execution", lifespan=lifespan)
 
@@ -92,6 +93,23 @@ def create_http_app(m: Module):
     async def resume() -> dict:
         m.kill.reset("http")
         return {"kill": m.kill.active}
+
+    @app.get("/signals/{signal_id}")
+    async def signal_result(signal_id: str) -> dict:
+        """Result of one signal: status (received = still running) + its journal events."""
+        status = m.store.get_signal_status(signal_id)
+        events = m.journal.for_signal(signal_id)
+        if status is None and not events:
+            return {"signal_id": signal_id, "status": "unknown", "final": True, "reason": "not_found", "events": []}
+        main = [e for e in events if e["action"] != "duplicate"]  # repeats do not change the result
+        last = main[-1] if main else (events[-1] if events else {})
+        return {
+            "signal_id": signal_id,
+            "status": status or last.get("action", "unknown"),
+            "final": status not in (None, "received"),
+            "reason": last.get("reason", ""),
+            "events": [{"ts": e["ts"], "action": e["action"], "reason": e["reason"]} for e in events],
+        }
 
     @app.get("/status")
     async def status() -> dict:

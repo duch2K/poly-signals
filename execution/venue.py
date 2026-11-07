@@ -118,9 +118,16 @@ class Venue(ABC):
 
 
 def fee_amount(notional: float, price: float, fee_bps: int) -> float:
-    """Conservative taker fee estimate (upper bound).
-    Exact Polymarket formula is market-specific - verify against docs.polymarket.com."""
-    return notional * fee_bps / 10_000
+    """Polymarket taker fee (docs.polymarket.com/trading/fees):
+
+        fee = shares * feeRate * p * (1 - p)
+
+    notional = shares * p, so fee = notional * feeRate * (1 - p).
+    feeRate is taken from GET /fee-rate `base_fee` (basis points) -> base_fee / 10_000.
+    Makers pay no fee; FOK orders are takers, so the fee always applies.
+    """
+    rate = fee_bps / 10_000
+    return notional * rate * (1.0 - price)
 
 
 # ---------------------------------------------------------------- market data

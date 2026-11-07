@@ -1,9 +1,14 @@
 # Polymarket Execution — complete-set arbitrage
 
+The module does **not** search for opportunities: signals come from external systems
+(other bots / analytics) via HTTP or a JSONL file.
+
 Receives a signal → runs risk checks → places leg 1 → waits `lag_seconds` → places leg 2 →
 if leg 2 fails, unwinds leg 1 → journals every step. **Paper mode by default**: no real orders.
 
 ## Install
+
+Python 3.9 or newer (tested on 3.9 and 3.13).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -18,6 +23,7 @@ pytest                           # 25 tests = spec acceptance criteria
 ```bash
 python -m execution.app serve --port 8080      # HTTP + heartbeat
 python -m execution.app replay examples/signals.jsonl
+python examples/send_signal.py SLUG            # send one test signal to a running server
 python -m execution.app kill "reason"          # manual stop
 python -m execution.app resume                 # clear stop (manual only)
 ```
@@ -29,6 +35,7 @@ HTTP:
 | POST | `/signal` | JSON signal (spec §3). Response: `accepted / rejected / duplicate` + `reason` |
 | POST | `/kill?reason=...` | kill switch + `cancel_all` |
 | POST | `/resume` | clear kill switch |
+| GET | `/signals/{signal_id}` | result of one signal: `status`, `final`, `reason`, journal `events` |
 | GET | `/status` | mode, kill state, daily loss, unhedged legs, balance, heartbeat |
 
 The server binds to `127.0.0.1` only and has no auth — do not expose it.
@@ -48,6 +55,35 @@ The server binds to `127.0.0.1` only and has no auth — do not expose it.
 ```
 
 All fields required. `size` = shares per leg. Duplicate `signal_id` is ignored (persisted in SQLite).
+
+## Paper buy test (force a trade on real books)
+
+Real YES + NO < $1 gaps are rare. To see the full buy path on live order books in paper mode,
+let the bot accept a small loss per share:
+
+```bash
+# pm-exec/.env
+EXEC_MIN_EDGE=-0.1        # accept up to 10 cents loss per share (PAPER ONLY, refused in live)
+```
+
+Restart the bot, then send near-miss signals, e.g. `python -m screener --max-sum 1.02 --once`
+(pm-screener). Expect `risk_ok → leg1_filled → leg2_sent → completed` with negative `locked_pnl`.
+Set `EXEC_MIN_EDGE=0.005` back afterwards.
+
+## Windows
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+pip install -e ".[dev]"
+copy .env.example .env
+pytest
+python -m execution.app serve --port 8080
+# second window:
+python examples\send_signal.py SLUG
+curl.exe http://127.0.0.1:8080/status
+Get-Content data\journal.jsonl -Wait -Tail 20
+```
 
 ## Layout
 
@@ -107,7 +143,8 @@ heartbeat_fail, kill, resume, alert`.
 
 ## TODO before live
 
-- [ ] Verify the fee formula against docs.polymarket.com (`fee_amount` is an upper bound for now).
+- [x] Fee formula from docs.polymarket.com/trading/fees: `shares × feeRate × p × (1−p)`.
+- [ ] Confirm `base_fee` (bps) from `GET /fee-rate` equals the docs' `feeRate` (e.g. 400 bps = 0.04) on a live market.
 - [ ] `LiveVenue`: actual fill price from `makingAmount/takingAmount` (currently = limit price).
 - [ ] Market minimum order size (`min_order_size`) — add to risk checks.
 - [ ] Market resolution: mark legs `settled`, otherwise `max_size_per_market` accumulates exposure.

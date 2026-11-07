@@ -50,6 +50,9 @@ class Journal:
             except Exception as e:  # noqa: BLE001
                 log.warning("alert webhook failed: %s", e)
 
+    def for_signal(self, signal_id: str) -> list[dict]:
+        return [r for r in self.read_all() if r.get("signal_id") == signal_id]
+
     def read_all(self) -> list[dict]:
         if not self.path.exists():
             return []

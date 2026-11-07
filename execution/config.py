@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     max_unhedged: int = Field(1, ge=0)               # unhedged legs at once
     min_liquidity_mult: float = Field(1.0, ge=1.0)   # book depth >= size * mult
     max_slippage: float = Field(0.01, ge=0)          # tolerance vs signal price (absolute, 1 cent)
-    min_edge: float = Field(0.005, ge=0)             # min profit per share after fees
+    min_edge: float = Field(0.005, ge=-0.1)          # min profit per share after fees;
+                                                     # NEGATIVE = paper test only (accepts a small loss)
     max_balance: float = Field(200.0, gt=0)          # account balance cap
     balance_limit_blocks_trading: bool = True        # balance over cap -> no new trades
     max_signal_age_s: float = Field(30.0, gt=0)      # reject stale signals
@@ -65,3 +66,5 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "LIVE mode requires EXEC_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY"
             )
+        if self.mode == Mode.LIVE and self.min_edge < 0:
+            raise RuntimeError("negative EXEC_MIN_EDGE is a paper-only test setting, refused in LIVE mode")
